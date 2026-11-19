@@ -1,7 +1,17 @@
 # Custom Maps for Geronimo
 
 A [GML](https://github.com/RemArrow/geronimo-mod-loader) plugin that puts custom maps in Geronimo's mission menu.
-It ships no maps itself.
+The plugin itself has no maps in it. Maps come as separate downloads.
+
+## Maps
+
+- **Myrne** by **SpectrumB**: the BONELAB map, rebuilt for Geronimo and shared with SpectrumB's permission. It is
+  a snowy 660 m village (3.5 GB) with Winter Village's wind ambience. It is a separate download on the
+  [release page](https://github.com/RemArrow/geronimo-custom-maps/releases), in parts, because GitHub allows 2 GB
+  per file. Download every `Myrne-*.zip.00N` part and `Join-Myrne.bat` into one folder and run the .bat. It joins
+  the parts into `Myrne-<version>.zip`. Extract that into `...\GERONIMO\Geronimo\Binaries\Win64`, which adds
+  `GML\plugins\CustomMaps\Mods\Myrne`. Its ambience needs Custom Maps 0.2.0 or newer. The sky is still black, and
+  the snow looks over-bright.
 
 ## For players
 
@@ -26,7 +36,12 @@ MapY = 230
 Spawn = North, 520, 120       ; a spawn players can pick: name (= the PlayerStart's tag), x, y on the tactical map
 Spawn = South, 520, 560
 Like = DA_WinterVillage       ; a game mission to borrow the thumbnail and tactical map picture from
+Ambience = /Game/Audio/Ambient/Villages/Winter_Map, 1.0   ; optional: a game sound looped in the map, and its volume
 ```
+
+The game's own maps place their ambience in the level. A map cooked outside the game has none unless it brings its
+own sounds, so `Ambience` names one of the game's (Winter Village's wind loop above) and the plugin plays it from
+the moment the map loads.
 
 ## Install
 
@@ -76,7 +91,13 @@ window. It goes from the team room into the map the way the menu does and logs:
 - where the player stands for 10 s.
 
 It snapshots SaveGames, the GML configs, the plugins folder and the game's `Mods` folder first. Everything it
-installs is put back after (hash-verified).
+installs is put back after (hash-verified). With `-Install`, the maps in `-Maps` are left out of that snapshot: they
+stay installed after the run, and a multi-GB map is never copied to TEMP.
+
+Cooked materials must carry **SM6** shaders: the game renders with D3D12 SM6, and a material cooked for SM5 only
+draws as the engine's grey default. The project's `Config\DefaultEngine.ini` needs
+`[/Script/WindowsTargetPlatform.WindowsTargetSettings]` with `+D3D12TargetedShaderFormats=PCD3D_SM6` (and SM5).
+Check a cooked material's `.uexp` for the text `PCD3D_SM6`.
 
 ## Verified
 
@@ -85,3 +106,10 @@ installs is put back after (hash-verified).
   the floor, for 10 s.
 - **2026-11-15, a 15,000-mesh 660 m map (3.3 GB):** it loaded from `GML\plugins\CustomMaps\Mods\` and the player
   stood on its ground at the chosen start.
+- **2026-11-19, Myrne cooked with SM6 and the game's forward renderer settings:** it loads in about 69 s. Its
+  15,102 meshes draw their real materials, lit by the sun, and the wind ambience plays.
+- MapTest (in `UEMaps`, not released) still draws black after the same re-cook. The cause is unknown.
+
+The project must also use the game's renderer settings (forward shading, no Lumen). Copy the game's
+`[/Script/Engine.RendererSettings]` block into the project's `DefaultEngine.ini`. Without it, a map draws but
+nothing in it is lit.

@@ -10,10 +10,15 @@
 //   Spawn = North, 712, 108             ; a spawn the players can pick: name (= the PlayerStart's tag), x, y on the tactical map
 //   Spawn = South, 552, 568
 //   Like = DA_WinterVillage             ; a game mission to borrow the thumbnail and tactical map picture from
+//   Ambience = /Game/Audio/Ambient/Villages/Winter_Map, 1.0   ; optional: a game sound looped in the map (volume)
 //
 // For each one this plugin builds a MissionData (the game's mission asset) with a "Free Roam" mode (no sublevels,
 // so no AI) and appends it to BP_GameInstance.Missions, the list the mission menu shows. The PvP plugin then adds
 // its PvP mode to it like to any other mission. Travel is the game's own: TravelTo(LevelName, "Default", ...).
+//
+// The game's maps place their ambience as an AmbientSound in the level (Winter Village: Winter_Map, a wind loop).
+// A map cooked outside the game can't easily reference /Game sounds, so Ambience names one and this plugin plays it
+// as a 2D sound when that map's world begins, restarting it if it ever stops.
 #include <GML/GML.hpp>
 #include <windows.h>
 #include <filesystem>
@@ -24,11 +29,16 @@
 
 using namespace gml;
 
-#define CUSTOMMAPS_VERSION "0.1.0"
+#define CUSTOMMAPS_VERSION "0.2.0"
 GML_PLUGIN("com.remarrow.custommaps", "Custom Maps", CUSTOMMAPS_VERSION);
 
 struct Spawn { std::string name; double x = 0, y = 0; };
-struct MapDef { std::string folder, name, level, like = "DA_WinterVillage"; double mapX = 900, mapY = 500; std::vector<Spawn> spawns; };
+struct MapDef {
+    std::string folder, name, level, like = "DA_WinterVillage", ambience;
+    double mapX = 900, mapY = 500;
+    float ambienceVolume = 1.0f;
+    std::vector<Spawn> spawns;
+};
 
 static std::vector<MapDef> s_maps;
 static std::vector<GUObject*> s_missions;  // ours, kept alive
@@ -65,6 +75,14 @@ static void FindMaps() {
             else if (k == "Like") m.like = v;
             else if (k == "MapX") m.mapX = atof(v.c_str());
             else if (k == "MapY") m.mapY = atof(v.c_str());
+            else if (k == "Ambience") {
+                size_t c = v.find(',');
+                m.ambience = Trim(v.substr(0, c));
+                if (c != std::string::npos) m.ambienceVolume = (float)atof(v.c_str() + c + 1);
+                // a bare package path gets its object name: /Game/A/B -> /Game/A/B.B
+                if (!m.ambience.empty() && m.ambience.find('.') == std::string::npos)
+                    m.ambience += "." + m.ambience.substr(m.ambience.rfind('/') + 1);
+            }
             else if (k == "Spawn") {
                 Spawn s;
                 std::stringstream ss(v);
@@ -173,10 +191,61 @@ static void AddMaps() {
     }
 }
 
+// ---- ambience
+static GUObject* s_ambience = nullptr;   // the playing AudioComponent (the world owns it)
+static GUObject* s_ambienceWorld = nullptr;
+static const MapDef* s_ambienceMap = nullptr;
+static float s_ambienceCheck = 0;
+
+static bool s_ambienceConfirmed = false;
+
+static void PlayAmbience(const MapDef& m) {
+    Object snd = LoadObject(m.ambience.c_str());
+    if (!snd) { Warn("{}: ambience {} not found", m.name, m.ambience); return; }
+    Params p(Lib("GameplayStatics"), "SpawnSound2D");
+    p.SetObj("WorldContextObject", Object(s_ambienceWorld)).SetObj("Sound", snd).Set("VolumeMultiplier", m.ambienceVolume)
+        .Set("PitchMultiplier", 1.0f).Set("StartTime", 0.0f).Set("bPersistAcrossLevelTransition", false).Set("bAutoDestroy", false);
+    p.Call();
+    s_ambience = p.Return<GUObject*>();
+    Log("{}: ambience {} {}", m.name, m.ambience, s_ambience ? "playing" : "failed to start");
+}
+
+// gm: the level's game mode (WORLD_BEGIN_PLAY's data), /Myrne/Maps/Myrne.Myrne:PersistentLevel.BP_GameModeBase_C_...
+// (API->WorldContext() is the game instance: its path names no level.)
+static void StartAmbience(GUObject* gm) {
+    s_ambience = nullptr;
+    s_ambienceMap = nullptr;
+    s_ambienceConfirmed = false;
+    s_ambienceWorld = gm;
+    std::string world = Object(gm).Path();
+    for (auto& m : s_maps)
+        if (!m.ambience.empty() && world.rfind(m.level + ".", 0) == 0) {
+            s_ambienceMap = &m;
+            PlayAmbience(m);
+        }
+}
+
+static void KeepAmbience(float dt) {
+    if (!s_ambienceMap || (s_ambienceCheck += dt) < 2.0f) return;
+    s_ambienceCheck = 0;
+    if (!s_ambienceWorld || !API->IsValid(s_ambienceWorld)) { s_ambienceMap = nullptr; s_ambience = nullptr; return; }  // level left
+    if (s_ambience && API->IsValid(s_ambience)) {
+        Params ip(Object(s_ambience), "IsPlaying");
+        if (ip.Call() && ip.Return<bool>()) {
+            if (!s_ambienceConfirmed) { s_ambienceConfirmed = true; Log("{}: ambience still playing", s_ambienceMap->name); }
+            return;
+        }
+        Log("{}: ambience stopped - restarting", s_ambienceMap->name);
+        Params pl(Object(s_ambience), "Play");
+        pl.Set("StartTime", 0.0f).Call();
+    } else PlayAmbience(*s_ambienceMap);
+}
+
 GML_AWAKE() {
     FindMaps();
     Hook("BP_GameInstance_C:GetItems", [](Object, GUFunction*, void*) { AddMaps(); return false; });  // before: the PvP plugin adds its mode after
-    On(GML_EVENT_WORLD_BEGIN_PLAY, [](void*) { AddMaps(); });
+    On(GML_EVENT_WORLD_BEGIN_PLAY, [](void* gm) { AddMaps(); StartAmbience((GUObject*)gm); });
+    On(GML_EVENT_TICK, [](void* d) { KeepAmbience(d ? *(float*)d : 0.0f); });
     Log("Custom Maps {} - {} map(s) in {}", CUSTOMMAPS_VERSION, s_maps.size(), ModsDir().string());
     return 0;
 }

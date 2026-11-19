@@ -101,6 +101,64 @@ static void Room() {
     if (s_step == 2 && T() > 45) { s_step = 3; Log("MAPS still in the team room after OpenLevel"); Log("DEV TEST COMPLETE"); }
 }
 
+// A picture of what the player sees (final colour, from the camera), to <ShotDir>\<file>.png.
+static std::string s_shotDir;
+static Object s_rt, s_cap;
+static void Shot(const std::string& file) {
+    if (s_shotDir.empty()) return;
+    Object pc;
+    {
+        Params p(Lib("GameplayStatics"), "GetPlayerCameraManager");
+        p.SetObj("WorldContextObject", Object(API->WorldContext())).Set("PlayerIndex", (int32_t)0).Call();
+        pc = p.Return<GUObject*>();
+    }
+    if (!pc) return;
+    if (!s_rt) {
+        Params rt(Lib("KismetRenderingLibrary"), "CreateRenderTarget2D");
+        rt.SetObj("WorldContextObject", Object(API->WorldContext())).Set("Width", (int32_t)1280).Set("Height", (int32_t)720).Set("Format", (uint8_t)2).Call();
+        s_rt = rt.Return<GUObject*>();
+        Params b(Lib("GameplayStatics"), "BeginDeferredActorSpawnFromClass");
+        b.SetObj("WorldContextObject", Object(API->WorldContext())).Set("ActorClass", FindClass("SceneCapture2D")).Set("CollisionHandlingOverride", (uint8_t)1);
+        float* xf = (float*)b.Ptr("SpawnTransform");
+        (void)xf;
+        Params mk(Lib("KismetMathLibrary"), "MakeTransform");
+        mk.Set("Scale", Vec{1, 1, 1}).Call();
+        GML_PropInfo xi{};
+        API->GetPropertyInfo(API->FindProperty((GUStruct*)API->FindFunction(Lib("KismetMathLibrary").Struct(), "MakeTransform"), "ReturnValue"), &xi);
+        std::memcpy(b.Ptr("SpawnTransform"), mk.Ptr("ReturnValue"), xi.size);
+        b.Call();
+        Object actor = b.Return<GUObject*>();
+        Params f(Lib("GameplayStatics"), "FinishSpawningActor");
+        f.SetObj("Actor", actor);
+        std::memcpy(f.Ptr("SpawnTransform"), mk.Ptr("ReturnValue"), xi.size);
+        f.Call();
+        s_cap = actor.GetObj("CaptureComponent2D");
+        s_cap.Set<GUObject*>("TextureTarget", s_rt.ptr);
+        s_cap.Set("CaptureSource", (uint8_t)2);  // SCS_FinalColorLDR
+        s_cap.SetBool("bCaptureEveryFrame", false);
+        s_cap.Set("FOVAngle", 90.0f);
+    }
+    Params cl(pc, "GetCameraLocation"); cl.Call();
+    Params cr(pc, "GetCameraRotation"); cr.Call();
+    struct Rot { double p, y, r; } rot = cr.Return<Rot>();
+    rot.p = -5;  // level, a little down: buildings and ground
+    Params mv(Object(API->GetOuter(s_cap.ptr)), "K2_SetActorLocationAndRotation");
+    mv.Set("NewLocation", cl.Return<Vec>()).Set("NewRotation", rot).Set("bSweep", false).Set("bTeleport", true).Call();
+    Params cs(s_cap, "CaptureScene"); cs.Call();
+    std::wstring dir(s_shotDir.begin(), s_shotDir.end()), name(file.begin(), file.end());
+    Params ex(Lib("KismetRenderingLibrary"), "ExportRenderTarget");
+    ex.SetObj("WorldContextObject", Object(API->WorldContext())).SetObj("TextureRenderTarget", s_rt)
+        .SetString("FilePath", dir).SetString("Filename", name + L".png").Call();
+    Log("MAPS SHOT {}", file);
+}
+
+static void Console(const char* cmd) {
+    std::string c(cmd);
+    Params p(Lib("KismetSystemLibrary"), "ExecuteConsoleCommand");
+    p.SetObj("WorldContextObject", Object(API->WorldContext())).SetString("Command", std::wstring(c.begin(), c.end())).Call();
+    Log("MAPS console: {}", cmd);
+}
+
 static void InMap() {
     static int phase = 0;
     static std::vector<Vec> track;
@@ -126,6 +184,16 @@ static void InMap() {
         Log("MAPS {} static mesh actor(s), {} with a mesh; materials: {}", sms.size(), ok, ms);
         for (const char* cls : {"DirectionalLight", "SkyLight", "SkyAtmosphere", "ExponentialHeightFog", "BP_AICharacter_C"})
             Log("MAPS {}: {}", cls, ActorsOf(cls).size());
+        // The lights as the game runs them (a map whose sun lights nothing draws black).
+        for (const char* cls : {"DirectionalLight", "SkyLight"})
+            for (auto& a : ActorsOf(cls)) {
+                Object c = a.GetObj("LightComponent");
+                if (!c) continue;
+                Params vis(c, "IsVisible"); vis.Call();
+                Log("MAPS {} {}: intensity {:.2f} visible {} affects world {} mobility {} cast shadows {} atmosphere sun {}",
+                    cls, a.Name(), c.Get<float>("Intensity"), vis.Return<bool>(), c.GetBool("bAffectsWorld"), c.Get<uint8_t>("Mobility"),
+                    c.GetBool("CastShadows"), c.GetBool("bAtmosphereSunLight"));
+            }
         // Collision: how the meshes' collision is set up, and what a downward trace at the first start hits.
         std::map<std::string, int> prof;
         int logged = 0;
@@ -214,6 +282,14 @@ static void InMap() {
         Object p = Pawn();
         Vec l = p ? Loc(p) : Vec{};
         Log("MAPS t+{} pawn {} at ({:.0f},{:.0f},{:.0f})", phase, p.Name(), l.x, l.y, l.z);
+        // The view early (textures still streaming in) and late. The scene capture has no eye adaptation (dark), so a
+        // HighResShot of the real viewport goes to %LOCALAPPDATA%\Geronimo\Saved\Screenshots too. (Turning texture
+        // streaming off to load every mip ran a 3.5 GB map out of memory: the game quit.)
+        if (phase == 3) { Shot("view_streamed"); Console("HighResShot 1"); }
+        if (phase == 6) Console("ShowFlag.PostProcessing 0");  // a third view without post-processing (exposure, bloom): is a dark view the post or the scene?
+        if (phase == 7) { Console("HighResShot 1"); Log("MAPS SHOT viewport, post-processing off"); }
+        if (phase == 8) Console("ShowFlag.PostProcessing 1");
+        if (phase == 10) { Shot("view_late"); Console("HighResShot 1"); }
         phase++;
         if (phase == 12) Log("DEV TEST COMPLETE");
     }
@@ -221,6 +297,7 @@ static void InMap() {
 
 GML_AWAKE() {
     s_preload = Config.Bind("Test", "Preload", true, "Load the map's assets before travelling.").Value();
+    s_shotDir = Config.Bind<std::string>("Test", "ShotDir", "", "Where the view captures go (none if empty).").Value();
     s_level = Config.Bind<std::string>("Test", "Level", "/MapTest/Maps/MapTest", "The custom map to travel to.").Value();
     On(GML_EVENT_WORLD_BEGIN_PLAY, [](void* gm) {
         std::string level = Object((GUObject*)gm).Path();
