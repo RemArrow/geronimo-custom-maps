@@ -6,12 +6,10 @@ The plugin itself has no maps in it. Maps come as separate downloads.
 ## Maps
 
 - **Myrne** by **SpectrumB**: the BONELAB map, rebuilt for Geronimo and shared with SpectrumB's permission. It is
-  a snowy 660 m village (3.5 GB) with Winter Village's wind ambience. It is a separate download on the
-  [release page](https://github.com/RemArrow/geronimo-custom-maps/releases), in parts, because GitHub allows 2 GB
-  per file. Download every `Myrne-*.zip.00N` part and `Join-Myrne.bat` into one folder and run the .bat. It joins
-  the parts into `Myrne-<version>.zip`. Extract that into `...\GERONIMO\Geronimo\Binaries\Win64`, which adds
-  `GML\plugins\CustomMaps\Mods\Myrne`. Its ambience needs Custom Maps 0.2.0 or newer. The sky is still black, and
-  the snow looks over-bright.
+  a snowy 660 m village (1.5 GB) with its own sky, ambience and surfaces. It is in GML Manager's Browse tab, or
+  download `Myrne-<version>.zip` from the [release page](https://github.com/RemArrow/geronimo-custom-maps/releases)
+  and extract it into `...\GERONIMO\Geronimo\Binaries\Win64`, which adds `GML\plugins\CustomMaps\Mods\Myrne`. Its
+  ambience and gunshot reverb need Custom Maps 0.3.0 or newer.
 
 ## For players
 
@@ -36,12 +34,22 @@ MapY = 230
 Spawn = North, 520, 120       ; a spawn players can pick: name (= the PlayerStart's tag), x, y on the tactical map
 Spawn = South, 520, 560
 Like = DA_WinterVillage       ; a game mission to borrow the thumbnail and tactical map picture from
-Ambience = /Game/Audio/Ambient/Villages/Winter_Map, 1.0   ; optional: a game sound looped in the map, and its volume
+Ambience = /Game/Audio/Ambient/Villages/Winter_Map, 1.0   ; optional: a sound looped in the map, and its volume
+Reverb = /Game/Developers/Meat/Resonance/Maps/Winter/R_WV_Outdoor   ; optional: reverb (gunshot echo) in the map
+ReverbZone = /Game/Developers/Meat/Resonance/Maps/Winter/R_WV_IndoorConcrete, 8360, 6178, -704, 10081, 7833, 86
+                              ; optional, any number: another reverb inside a box (min x, y, z, max x, y, z in cm)
 ```
 
-The game's own maps place their ambience in the level. A map cooked outside the game has none unless it brings its
-own sounds, so `Ambience` names one of the game's (Winter Village's wind loop above) and the plugin plays it from
-the moment the map loads.
+- **Ambience:** the game's own maps place their ambience in the level. `Ambience` names a sound, either the
+  game's (Winter Village's wind loop above) or one cooked into the map (Myrne: `/Myrne/Audio/Ambience1`), and the
+  plugin loops it from the moment the map loads.
+- **Reverb:** the game gives gunshots their echo with Resonance Audio reverb volumes, whose presets a map cooked
+  outside the game can't reference. `Reverb` names a preset (the game's Winter Village ones work) that the plugin
+  sets as the global reverb while the map is loaded. Each `ReverbZone` swaps in another preset while the camera is
+  inside its box. The previous reverb comes back when the map is left.
+- **Footsteps and bullet hits** go by the surface type of what is hit. Give the map's colliders physical materials
+  with the game's surface numbers (Concrete 10, Glass 14, Metal 15, Softwood 26, Dirt 30): copy the game's
+  `PhysicalSurfaces` list into the project's `DefaultEngine.ini`.
 
 ## Install
 
@@ -109,7 +117,14 @@ Check a cooked material's `.uexp` for the text `PCD3D_SM6`.
 - **2026-11-19, Myrne cooked with SM6 and the game's forward renderer settings:** it loads in about 69 s. Its
   15,102 meshes draw their real materials, lit by the sun, and the wind ambience plays.
 - MapTest (in `UEMaps`, not released) still draws black after the same re-cook. The cause is unknown.
+- **2026-11-23, Myrne 1.1 with Custom Maps 0.3.0** (flat, no headset): it loads with its BONELAB sky, lit like
+  Winter Village, and its own ambience and the outdoor reverb start. The player spawns on the ground.
 
 The project must also use the game's renderer settings (forward shading, no Lumen). Copy the game's
 `[/Script/Engine.RendererSettings]` block into the project's `DefaultEngine.ini`. Without it, a map draws but
-nothing in it is lit.
+nothing in it is lit. Then turn **mesh distance fields off** (`r.GenerateMeshDistanceFields=False`): Myrne's carried
+4.4 GB of them, which a movable sky light loads into video memory, and it crashed a 4 GB GPU. No shader reads that
+setting, so it doesn't break the game's renderer settings.
+
+Light: with only movable lights (no baked bounce light), copying Winter Village's grey 1.5-lux sun came out about
+4× too dark. Myrne uses a white 1.5-lux sun and a sky light of 1.0.

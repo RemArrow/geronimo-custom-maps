@@ -10,7 +10,10 @@
 //   Spawn = North, 712, 108             ; a spawn the players can pick: name (= the PlayerStart's tag), x, y on the tactical map
 //   Spawn = South, 552, 568
 //   Like = DA_WinterVillage             ; a game mission to borrow the thumbnail and tactical map picture from
-//   Ambience = /Game/Audio/Ambient/Villages/Winter_Map, 1.0   ; optional: a game sound looped in the map (volume)
+//   Ambience = /Game/Audio/Ambient/Villages/Winter_Map, 1.0   ; optional: a sound looped in the map (volume)
+//   Reverb = /Game/Developers/Meat/Resonance/Maps/Winter/R_WV_Outdoor   ; optional: Resonance reverb preset (gunshot echo)
+//   ReverbZone = /Game/Developers/Meat/Resonance/Maps/Winter/R_WV_IndoorConcrete, 8660, 6478, -704, 9781, 7533, -284
+//                                       ; optional, any number: another preset inside a box (min x y z, max x y z, cm)
 //
 // For each one this plugin builds a MissionData (the game's mission asset) with a "Free Roam" mode (no sublevels,
 // so no AI) and appends it to BP_GameInstance.Missions, the list the mission menu shows. The PvP plugin then adds
@@ -29,16 +32,24 @@
 
 using namespace gml;
 
-#define CUSTOMMAPS_VERSION "0.2.0"
+#define CUSTOMMAPS_VERSION "0.3.0"
 GML_PLUGIN("com.remarrow.custommaps", "Custom Maps", CUSTOMMAPS_VERSION);
 
 struct Spawn { std::string name; double x = 0, y = 0; };
+struct ReverbZone { std::string preset; double mn[3] = {}, mx[3] = {}; };
 struct MapDef {
-    std::string folder, name, level, like = "DA_WinterVillage", ambience;
+    std::string folder, name, level, like = "DA_WinterVillage", ambience, reverb;
     double mapX = 900, mapY = 500;
     float ambienceVolume = 1.0f;
     std::vector<Spawn> spawns;
+    std::vector<ReverbZone> zones;
 };
+
+// a bare package path gets its object name: /Game/A/B -> /Game/A/B.B
+static std::string ObjectPath(std::string p) {
+    if (!p.empty() && p.find('.') == std::string::npos) p += "." + p.substr(p.rfind('/') + 1);
+    return p;
+}
 
 static std::vector<MapDef> s_maps;
 static std::vector<GUObject*> s_missions;  // ours, kept alive
@@ -79,9 +90,19 @@ static void FindMaps() {
                 size_t c = v.find(',');
                 m.ambience = Trim(v.substr(0, c));
                 if (c != std::string::npos) m.ambienceVolume = (float)atof(v.c_str() + c + 1);
-                // a bare package path gets its object name: /Game/A/B -> /Game/A/B.B
-                if (!m.ambience.empty() && m.ambience.find('.') == std::string::npos)
-                    m.ambience += "." + m.ambience.substr(m.ambience.rfind('/') + 1);
+                m.ambience = ObjectPath(m.ambience);
+            }
+            else if (k == "Reverb") m.reverb = ObjectPath(v);
+            else if (k == "ReverbZone") {  // preset, minX, minY, minZ, maxX, maxY, maxZ (world cm)
+                ReverbZone z;
+                std::stringstream ss(v);
+                std::string part;
+                std::getline(ss, part, ',');
+                z.preset = ObjectPath(Trim(part));
+                int n = 0;
+                for (; n < 6 && std::getline(ss, part, ','); n++) (n < 3 ? z.mn[n] : z.mx[n - 3]) = atof(part.c_str());
+                if (n == 6 && !z.preset.empty()) m.zones.push_back(z);
+                else Warn("{}: ReverbZone needs a preset and six numbers: {}", m.folder, v);
             }
             else if (k == "Spawn") {
                 Spawn s;
@@ -241,11 +262,79 @@ static void KeepAmbience(float dt) {
     } else PlayAmbience(*s_ambienceMap);
 }
 
+// ---- reverb
+// The game's maps give gunshots their echo with Resonance Audio reverb volumes (Winter Village: GVRAudioVolumes with
+// presets like R_WV_Outdoor). A map cooked outside the game can't reference those presets, so Reverb names the one
+// to use as Resonance's global preset while the map is loaded, and each ReverbZone swaps in another preset while the
+// camera is inside its box (a bunker). The preset that was there before comes back when the map is left.
+static const MapDef* s_reverbMap = nullptr;
+static GUObject* s_reverbWorld = nullptr;
+static GUObject* s_reverbBefore = nullptr;
+static std::string s_reverbNow;
+static float s_reverbCheck = 0;
+
+static void SetGlobalReverb(GUObject* preset) {
+    Params p(Lib("ResonanceAudioBlueprintFunctionLibrary"), "SetGlobalReverbPreset");
+    p.SetObj("InPreset", Object(preset)).Call();
+}
+
+static bool UseReverb(const std::string& path) {
+    if (path == s_reverbNow) return true;
+    Object preset = LoadObject(path.c_str());
+    if (!preset) { Warn("{}: reverb preset {} not found", s_reverbMap->name, path); s_reverbNow = path; return false; }
+    API->KeepAlive(preset.ptr);
+    SetGlobalReverb(preset.ptr);
+    Log("{}: reverb {}", s_reverbMap->name, path.substr(path.rfind('/') + 1));
+    s_reverbNow = path;
+    return true;
+}
+
+static void EndReverb() {
+    if (!s_reverbMap) return;
+    SetGlobalReverb(s_reverbBefore);
+    Log("{}: reverb back to {}", s_reverbMap->name, s_reverbBefore ? Object(s_reverbBefore).Name() : std::string("none"));
+    s_reverbMap = nullptr;
+    s_reverbNow.clear();
+}
+
+static void StartReverb(GUObject* gm) {
+    EndReverb();
+    std::string world = Object(gm).Path();
+    for (auto& m : s_maps)
+        if (!m.reverb.empty() && world.rfind(m.level + ".", 0) == 0) {
+            Params g(Lib("ResonanceAudioBlueprintFunctionLibrary"), "GetGlobalReverbPreset");
+            s_reverbBefore = g.Call() ? g.Return<GUObject*>() : nullptr;
+            s_reverbMap = &m;
+            s_reverbWorld = gm;
+            UseReverb(m.reverb);
+        }
+}
+
+static void KeepReverb(float dt) {
+    if (!s_reverbMap || (s_reverbCheck += dt) < 0.25f) return;
+    s_reverbCheck = 0;
+    if (!s_reverbWorld || !API->IsValid(s_reverbWorld)) { EndReverb(); return; }  // level left
+    if (s_reverbMap->zones.empty()) return;
+    Params pc(Lib("GameplayStatics"), "GetPlayerCameraManager");
+    pc.SetObj("WorldContextObject", Object(s_reverbWorld)).Set("PlayerIndex", 0);
+    if (!pc.Call()) return;
+    GUObject* cam = pc.Return<GUObject*>();
+    if (!cam) return;
+    Params cl(Object(cam), "GetCameraLocation");
+    if (!cl.Call()) return;
+    struct V3 { double x, y, z; } v = cl.Return<V3>();
+    const double p[3] = {v.x, v.y, v.z};
+    const std::string* want = &s_reverbMap->reverb;
+    for (auto& z : s_reverbMap->zones)
+        if (p[0] >= z.mn[0] && p[0] <= z.mx[0] && p[1] >= z.mn[1] && p[1] <= z.mx[1] && p[2] >= z.mn[2] && p[2] <= z.mx[2]) { want = &z.preset; break; }
+    UseReverb(*want);
+}
+
 GML_AWAKE() {
     FindMaps();
     Hook("BP_GameInstance_C:GetItems", [](Object, GUFunction*, void*) { AddMaps(); return false; });  // before: the PvP plugin adds its mode after
-    On(GML_EVENT_WORLD_BEGIN_PLAY, [](void* gm) { AddMaps(); StartAmbience((GUObject*)gm); });
-    On(GML_EVENT_TICK, [](void* d) { KeepAmbience(d ? *(float*)d : 0.0f); });
+    On(GML_EVENT_WORLD_BEGIN_PLAY, [](void* gm) { AddMaps(); StartAmbience((GUObject*)gm); StartReverb((GUObject*)gm); });
+    On(GML_EVENT_TICK, [](void* d) { float dt = d ? *(float*)d : 0.0f; KeepAmbience(dt); KeepReverb(dt); });
     Log("Custom Maps {} - {} map(s) in {}", CUSTOMMAPS_VERSION, s_maps.size(), ModsDir().string());
     return 0;
 }
