@@ -9,7 +9,7 @@ The plugin itself has no maps in it. Maps come as separate downloads.
   a snowy 660 m village (1.5 GB) with its own sky, ambience and surfaces. It is in GML Manager's Browse tab, or
   download `Myrne-<version>.zip` from the [release page](https://github.com/RemArrow/geronimo-custom-maps/releases)
   and extract it into `...\GERONIMO\Geronimo\Binaries\Win64`, which adds `GML\plugins\CustomMaps\Mods\Myrne`. Its
-  ambience and gunshot reverb need Custom Maps 0.3.0 or newer.
+  ambience needs Custom Maps 0.3.0 or newer.
 
 ## For players
 
@@ -35,18 +35,20 @@ Spawn = North, 520, 120       ; a spawn players can pick: name (= the PlayerStar
 Spawn = South, 520, 560
 Like = DA_WinterVillage       ; a game mission to borrow the thumbnail and tactical map picture from
 Ambience = /Game/Audio/Ambient/Villages/Winter_Map, 1.0   ; optional: a sound looped in the map, and its volume
-Reverb = /Game/Developers/Meat/Resonance/Maps/Winter/R_WV_Outdoor   ; optional: reverb (gunshot echo) in the map
-ReverbZone = /Game/Developers/Meat/Resonance/Maps/Winter/R_WV_IndoorConcrete, 8360, 6178, -704, 10081, 7833, 86
-                              ; optional, any number: another reverb inside a box (min x, y, z, max x, y, z in cm)
 ```
 
 - **Ambience:** the game's own maps place their ambience in the level. `Ambience` names a sound, either the
   game's (Winter Village's wind loop above) or one cooked into the map (Myrne: `/Myrne/Audio/Ambience1`), and the
   plugin loops it from the moment the map loads.
-- **Reverb:** the game gives gunshots their echo with Resonance Audio reverb volumes, whose presets a map cooked
-  outside the game can't reference. `Reverb` names a preset (the game's Winter Village ones work) that the plugin
-  sets as the global reverb while the map is loaded. Each `ReverbZone` swaps in another preset while the camera is
-  inside its box. The previous reverb comes back when the map is left.
+- **Reverb belongs in the map.** The game gives every sound its room with Resonance Audio presets on audio volumes
+  (Meat's presets, in each map's audio sublevel). Resonance only changes preset from the volume the listener is in:
+  a map with no audio volume keeps the previous map's reverb (the team room's indoor range), so gunshots and
+  footsteps sound indoors. Give the map an `AudioVolume` over the whole playable area, plus smaller ones with a
+  higher priority for rooms, each with a `ResonanceAudioReverbPluginPreset` of its own (enable the ResonanceAudio
+  plugin in the project). Myrne copies Meat's Winter Village presets: outdoors with room effects off, gain 0.25;
+  bunkers brick and concrete, gain 1.25.
+  The `Reverb` and `ReverbZone` lines added in 0.3.0 have no effect, so don't use them: the engine doesn't apply a
+  global preset while another one is active.
 - **Footsteps and bullet hits** go by the surface type of what is hit. Give the map's colliders physical materials
   with the game's surface numbers (Concrete 10, Glass 14, Metal 15, Softwood 26, Dirt 30): copy the game's
   `PhysicalSurfaces` list into the project's `DefaultEngine.ini`.
@@ -118,7 +120,10 @@ Check a cooked material's `.uexp` for the text `PCD3D_SM6`.
   15,102 meshes draw their real materials, lit by the sun, and the wind ambience plays.
 - MapTest (in `UEMaps`, not released) still draws black after the same re-cook. The cause is unknown.
 - **2026-11-23, Myrne 1.1 with Custom Maps 0.3.0** (flat, no headset): it loads with its BONELAB sky, lit like
-  Winter Village, and its own ambience and the outdoor reverb start. The player spawns on the ground.
+  Winter Village, and its own ambience starts. The player spawns on the ground.
+- **2026-11-23, Myrne 1.2** (in a headset): gunshots, footsteps and ambience sound right with its own reverb
+  volumes. A crash still happened after a few minutes; the crash dumps point into the game's renderer and VR code,
+  not a mod, and it is being looked into.
 
 The project must also use the game's renderer settings (forward shading, no Lumen). Copy the game's
 `[/Script/Engine.RendererSettings]` block into the project's `DefaultEngine.ini`. Without it, a map draws but
